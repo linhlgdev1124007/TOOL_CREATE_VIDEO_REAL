@@ -1,0 +1,352 @@
+diff --git a/bun.lock b/bun.lock
+index adf76a2..4551f9a 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -1,5 +1,6 @@
+ {
+   "lockfileVersion": 1,
++  "configVersion": 0,
+   "workspaces": {
+     "": {
+       "name": "opencut-mcp",
+diff --git a/scripts/demo.ts b/scripts/demo.ts
+index 5e14db2..7eca8ce 100644
+--- a/scripts/demo.ts
++++ b/scripts/demo.ts
+@@ -26,6 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
+ const REPO_ROOT = resolve(__dirname, "..");
+ const VIDEO = resolve(REPO_ROOT, "media/demo-video.mp4");
+ const BGM = resolve(REPO_ROOT, "media/demo-bgm.mp3");
++const SCREENSHOT = resolve(REPO_ROOT, "output/opencut-demo-final.png");
+ 
+ function log(step: string, data?: unknown) {
+ 	if (data !== undefined) {
+@@ -117,7 +118,7 @@ async function main() {
+ 	}
+ 
+ 	log("9. screenshot editor");
+-	const shot = await tools.screenshot({ path: "/tmp/opencut-demo-final.png" });
++	const shot = await tools.screenshot({ path: SCREENSHOT });
+ 	console.log(shot);
+ 
+ 	log("10. cleanup");
+diff --git a/src/browser.ts b/src/browser.ts
+index 0d81420..6c2a298 100644
+--- a/src/browser.ts
++++ b/src/browser.ts
+@@ -65,13 +65,27 @@ class SessionHolder {
+ 		page.on("pageerror", (err) => {
+ 			console.error("[browser pageerror]", err.message);
+ 		});
++		page.on("console", (message) => {
++			if (message.type() === "error") {
++				console.error("[browser console]", message.text());
++			}
++		});
+ 
+-		await page.goto(`${DEFAULT_BASE}/projects`, { waitUntil: "networkidle" });
+-		const created = await tryCreateProject(page);
+-		if (!created) {
+-			throw new Error("failed to find 'New project' button on /projects");
++		// Next.js dev mode keeps HMR connections open, so `networkidle` can
++		// remain false forever even though the projects UI is ready to use.
++		await page.goto(`${DEFAULT_BASE}/projects`, {
++			waitUntil: "domcontentloaded",
++			timeout: 60_000,
++		});
++		let created = false;
++		for (let attempt = 0; attempt < 3 && !page.url().includes("/editor/"); attempt++) {
++			await page.waitForTimeout(attempt === 0 ? 1_500 : 2_000);
++			created = (await tryCreateProject(page)) || created;
++			await page.waitForURL("**/editor/**", { timeout: 15_000 }).catch(() => {});
++		}
++		if (!created || !page.url().includes("/editor/")) {
++			throw new Error("failed to create a project from /projects");
+ 		}
+-		await page.waitForURL("**/editor/**", { timeout: 15_000 });
+ 		const projectId = page.url().split("/editor/")[1]!.split("?")[0]!;
+ 
+ 		await dismissBootDialogs(page);
+@@ -85,12 +99,13 @@ const holder = new SessionHolder();
+ 
+ async function tryCreateProject(page: Page): Promise<boolean> {
+ 	for (const sel of [
+-		'button:has-text("New project")',
+-		'button:has-text("New Project")',
+-		'a:has-text("New project")',
++		'button:has-text("New project"):visible',
++		'button:has-text("New Project"):visible',
++		'a:has-text("New project"):visible',
+ 	]) {
+ 		const loc = page.locator(sel);
+ 		if ((await loc.count()) > 0) {
++			await loc.first().waitFor({ state: "visible", timeout: 30_000 });
+ 			await loc.first().click();
+ 			return true;
+ 		}
+@@ -132,6 +147,7 @@ async function clickFirstMatching(
+ async function waitForEditor(page: Page): Promise<void> {
+ 	await page.waitForFunction(
+ 		() => typeof (window as unknown as { __editor?: unknown }).__editor === "object",
++		undefined,
+ 		{ timeout: 15_000 },
+ 	);
+ }
+diff --git a/src/index.ts b/src/index.ts
+index 20741cc..6aec258 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -11,8 +11,10 @@ import {
+ 	ListToolsRequestSchema,
+ } from "@modelcontextprotocol/sdk/types.js";
+ import { closeSession, getSession } from "./browser.js";
++import { setProjectSettings } from "./project-settings.js";
+ import {
+ 	AddMediaInput,
++	ProjectSettingsInput,
+ 	AddTrackInput,
+ 	DeleteInput,
+ 	ExportInput,
+@@ -34,6 +36,7 @@ const emptyInputSchema = { type: "object", properties: {} } as const;
+ 
+ server.setRequestHandler(ListToolsRequestSchema, async () => ({
+ 	tools: [
++		{ name: "opencut_set_project_settings", description: "Set explicit canvas size and integer fps after importing media.", inputSchema: zodToJson(ProjectSettingsInput) },
+ 		{ name: "opencut_get_state", description: "Read timeline duration + track / element summary.", inputSchema: emptyInputSchema },
+ 		{ name: "opencut_add_track", description: "Add a video/audio/text/graphic/effect track. Returns trackId.", inputSchema: zodToJson(AddTrackInput) },
+ 		{ name: "opencut_add_media", description: "Upload a local file as MediaAsset. Returns { id, name, duration, type }.", inputSchema: zodToJson(AddMediaInput) },
+@@ -44,7 +47,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
+ 		{ name: "opencut_delete", description: "Delete element(s).", inputSchema: zodToJson(DeleteInput) },
+ 		{ name: "opencut_undo", description: "Undo the last command.", inputSchema: emptyInputSchema },
+ 		{ name: "opencut_redo", description: "Redo the last undone command.", inputSchema: emptyInputSchema },
+-		{ name: "opencut_export", description: "Trigger renderer.exportProject and wait for completion.", inputSchema: zodToJson(ExportInput) },
++		{ name: "opencut_export", description: "Render the current project and save it to outputPath.", inputSchema: zodToJson(ExportInput) },
+ 		{ name: "opencut_screenshot", description: "Screenshot the editor viewport for debugging.", inputSchema: zodToJson(ScreenshotInput) },
+ 	],
+ }));
+@@ -62,6 +65,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
+ 
+ async function runTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+ 	switch (name) {
++		case "opencut_set_project_settings": return setProjectSettings(ProjectSettingsInput.parse(args));
+ 		case "opencut_get_state": return tools.getState();
+ 		case "opencut_add_track": return tools.addTrack(AddTrackInput.parse(args));
+ 		case "opencut_add_media": return tools.addMedia(AddMediaInput.parse(args));
+@@ -85,6 +89,7 @@ async function main() {
+ 	});
+ 	const transport = new StdioServerTransport();
+ 	await server.connect(transport);
++	transport.onclose = async () => { await closeSession(); process.exit(0); };
+ }
+ 
+ for (const sig of ["SIGINT", "SIGTERM"] as const) {
+diff --git a/src/schemas.ts b/src/schemas.ts
+index 4cb936d..c55148e 100644
+--- a/src/schemas.ts
++++ b/src/schemas.ts
+@@ -1,5 +1,11 @@
+ import { z } from "zod";
+ 
++export const ProjectSettingsInput = z.object({
++	width: z.number().int().positive().multipleOf(2).max(1920),
++	height: z.number().int().positive().multipleOf(2).max(1920),
++	fps: z.number().int().min(1).max(60),
++});
++
+ // Public MCP tool schemas. Also imported by tests to exercise validation
+ // without spinning up the MCP transport / Playwright.
+ 
+@@ -13,8 +19,8 @@ export const AddMediaInput = z.object({ filePath: z.string() });
+ export const InsertClipInput = z.object({
+ 	mediaId: z.string(),
+ 	elementType: z.enum(["video", "audio", "image"]),
+-	startTime: z.number(),
+-	duration: z.number().optional(),
++	startTime: z.number().finite().nonnegative(),
++	duration: z.number().finite().positive().optional(),
+ 	name: z.string().optional(),
+ 	trackId: z.string().optional(),
+ });
+@@ -43,8 +49,9 @@ export const DeleteInput = z.object({ elementIds: z.array(z.string()) });
+ export const ExportInput = z.object({
+ 	format: z.enum(["mp4", "webm"]).default("mp4"),
+ 	quality: z.enum(["low", "medium", "high"]).default("medium"),
+-	fps: z.number().optional(),
++	fps: z.number().int().min(1).max(60).optional(),
+ 	includeAudio: z.boolean().default(true),
++	outputPath: z.string().min(1),
+ });
+ 
+ export const ScreenshotInput = z.object({ path: z.string().optional() });
+diff --git a/src/tools.ts b/src/tools.ts
+index 749bd9f..13be5b2 100644
+--- a/src/tools.ts
++++ b/src/tools.ts
+@@ -36,6 +36,7 @@ export type ExportInput = {
+ 	quality: "low" | "medium" | "high";
+ 	fps?: number;
+ 	includeAudio: boolean;
++	outputPath: string;
+ };
+ export type ScreenshotInput = { path?: string };
+ 
+@@ -59,7 +60,7 @@ export async function getState() {
+ 			})),
+ 		}));
+ 		return {
+-			projectId: e.project.getActiveOrNull()?.id ?? null,
++			projectId: e.project.getActiveOrNull()?.metadata?.id ?? null,
+ 			duration: e.timeline.getTotalDuration(),
+ 			lastFrame: e.timeline.getLastFrameTime?.() ?? null,
+ 			tracks: {
+@@ -96,14 +97,13 @@ export async function addMedia(input: AddMediaInput) {
+ 		timeout: 15_000,
+ 	});
+ 	const inputEl = page.locator('input[type="file"]').first();
+-	await inputEl.setInputFiles(input.filePath);
+-
+-	const initialCount = await evalInEditor<number>(
+-		`return window.__editor.media.getAssets?.().length ?? 0;`,
++	const initialIds = await evalInEditor<string[]>(
++		`return (window.__editor.media.getAssets?.() ?? []).map(a => a.id);`,
+ 	);
++	await inputEl.setInputFiles(input.filePath);
+ 	const filename = path.basename(input.filePath);
+ 	const asset = await page.waitForFunction(
+-		({ initialCount, filename }) => {
++		({ initialIds, filename }) => {
+ 			const assets = (window as unknown as {
+ 				__editor: {
+ 					media: {
+@@ -116,11 +116,11 @@ export async function addMedia(input: AddMediaInput) {
+ 					};
+ 				};
+ 			}).__editor.media.getAssets?.();
+-			if (!assets || assets.length <= initialCount) return null;
+-			const match = assets.find((a) => a.name === filename) ?? assets[assets.length - 1];
++			if (!assets) return null;
++			const match = assets.find((a) => !initialIds.includes(a.id) && a.name === filename);
+ 			return match ?? null;
+ 		},
+-		{ initialCount, filename },
++		{ initialIds, filename },
+ 		{ timeout: 30_000 },
+ 	);
+ 	return asset.jsonValue();
+@@ -185,7 +185,7 @@ export async function insertClip(input: InsertClipInput) {
+ 			...after.overlay.flatMap(t => t.elements.map(el => ({ ...el, trackId: t.id }))),
+ 			...after.audio.flatMap(t => t.elements.map(el => ({ ...el, trackId: t.id }))),
+ 		];
+-		const newest = all.find(el => el.mediaId === args.mediaId && el.startTime === args.startTime) ?? null;
++		const newest = all.find(el => el.mediaId === args.mediaId && el.startTime === startTicks) ?? null;
+ 
+ 		return {
+ 			inserted: !!newest,
+@@ -260,13 +260,48 @@ export async function redo() {
+ }
+ 
+ export async function exportProject(input: ExportInput) {
+-	return evalInEditor<unknown>(
++	const fs = await import("node:fs/promises");
++	const path = await import("node:path");
++	const result = await evalInEditor<{
++		success: boolean;
++		error?: string;
++		cancelled?: boolean;
++		base64?: string;
++		byteLength?: number;
++	}>(
+ 		`
+-		const result = await window.__editor.renderer.exportProject({ options: args });
+-		return result;
++		const options = {
++			format: args.format,
++			quality: args.quality,
++			fps: args.fps ? { numerator: args.fps, denominator: 1 } : undefined,
++			includeAudio: args.includeAudio,
++		};
++		const result = await window.__editor.renderer.exportProject({ options });
++		if (!result.success || !result.buffer) return result;
++
++		const bytes = new Uint8Array(result.buffer);
++		const chunks = [];
++		const chunkSize = 0x8000;
++		for (let offset = 0; offset < bytes.length; offset += chunkSize) {
++			chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
++		}
++		return {
++			success: true,
++			base64: btoa(chunks.join("")),
++			byteLength: bytes.byteLength,
++		};
+ 		`,
+ 		{ ...input },
+ 	);
++
++	if (!result.success || !result.base64) return result;
++	await fs.mkdir(path.dirname(input.outputPath), { recursive: true });
++	await fs.writeFile(input.outputPath, Buffer.from(result.base64, "base64"));
++	return {
++		success: true,
++		path: input.outputPath,
++		byteLength: result.byteLength,
++	};
+ }
+ 
+ export async function screenshot(input: ScreenshotInput) {
+diff --git a/tests/schema.test.ts b/tests/schema.test.ts
+index bfe8534..34138d7 100644
+--- a/tests/schema.test.ts
++++ b/tests/schema.test.ts
+@@ -11,10 +11,24 @@ import {
+ 	AddTrackInput,
+ 	ExportInput,
+ 	InsertClipInput,
++	ProjectSettingsInput,
+ 	zodFieldToJson,
+ 	zodToJson,
+ } from "../src/schemas.js";
+ 
++describe("Reel project settings", () => {
++	test("accepts 720p and rejects odd dimensions or invalid fps", () => {
++		expect(ProjectSettingsInput.parse({ width: 720, height: 1280, fps: 30 }).width).toBe(720);
++		for (const invalid of [{ width: 721, height: 1280, fps: 30 }, { width: 720, height: 1280, fps: 0 }]) {
++			expect(() => ProjectSettingsInput.parse(invalid)).toThrow();
++		}
++	});
++	test("rejects negative clip positions and empty durations", () => {
++		expect(() => InsertClipInput.parse({ mediaId: "m", elementType: "video", startTime: -1 })).toThrow();
++		expect(() => InsertClipInput.parse({ mediaId: "m", elementType: "video", startTime: 0, duration: 0 })).toThrow();
++	});
++});
++
+ describe("AddTrackInput", () => {
+ 	test("accepts valid track types", () => {
+ 		for (const type of ["video", "audio", "text", "graphic", "effect"] as const) {
+@@ -57,13 +71,14 @@ describe("InsertClipInput", () => {
+ 
+ describe("ExportInput defaults", () => {
+ 	test("applies mp4 / medium / includeAudio=true when omitted", () => {
+-		const parsed = ExportInput.parse({});
++		const parsed = ExportInput.parse({ outputPath: "output/test.mp4" });
+ 		expect(parsed.format).toBe("mp4");
+ 		expect(parsed.quality).toBe("medium");
+ 		expect(parsed.includeAudio).toBe(true);
+ 	});
+ 	test("respects explicit overrides", () => {
+ 		const parsed = ExportInput.parse({
++			outputPath: "output/test.webm",
+ 			format: "webm",
+ 			quality: "high",
+ 			includeAudio: false,
+@@ -113,8 +128,8 @@ describe("zodToJson (object schemas)", () => {
+ 			enum: ["video", "audio", "text", "graphic", "effect"],
+ 		});
+ 	});
+-	test("ExportInput has no required fields (all defaulted or optional)", () => {
++	test("ExportInput requires an explicit output path", () => {
+ 		const json = zodToJson(ExportInput);
+-		expect(json.required).toEqual([]);
++		expect(json.required).toEqual(["outputPath"]);
+ 	});
+ });

@@ -1,0 +1,12 @@
+{
+  "opencut-classic": {
+    "url": "https://github.com/kenimo49/opencut-classic.git",
+    "commit": "a7443ec84246881476039a6fdc743a964875841c"
+  },
+  "opencut-mcp": {
+    "url": "https://github.com/kenimo49/opencut-mcp.git",
+    "commit": "ead4a8d135375de165612dbe1d452a18af8038b1",
+    "patch": "patches/opencut-mcp.patch",
+    "overlay": "patches/opencut-mcp-overlay"
+  }
+}

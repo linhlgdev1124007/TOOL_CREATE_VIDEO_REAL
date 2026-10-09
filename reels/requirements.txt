@@ -1,0 +1,6 @@
+kokoro-onnx==0.4.9
+soundfile==0.13.1
+Pillow==11.3.0
+numpy==2.4.6
+onnxruntime==1.23.1
+espeakng-loader==0.2.4

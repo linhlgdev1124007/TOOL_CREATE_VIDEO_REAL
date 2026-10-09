@@ -1,0 +1,27 @@
+# Local dependencies are restored from dependencies.lock.json and patches/.
+/opencut-classic/
+/opencut-mcp/
+/integrations/
+/.venv*/
+/.cache/
+/.tmp/
+/output/
+/analysis/
+/hy/
+/work/
+/source/**
+!/source/README.md
+/reels/assets/
+**/node_modules/
+**/__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+credentials*.json
+token*.json

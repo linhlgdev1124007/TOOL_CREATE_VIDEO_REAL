@@ -1,0 +1,30 @@
+# Fresh audio discovery
+
+Run this workflow for each new Reel before choosing music/SFX. Web research is performed by the agent, not by a standalone Python scraper. Default market US follows the US-language brand brief; use the user's target market instead when supplied.
+
+1. Search current Facebook/Instagram Reel audio trends for the target region and last 7 days. Prefer directly visible platform audio pages, trend indicators and dated official listings over recycled blog lists. Use TikTok Creative Center as a separately labeled cross-platform inspiration source, never evidence that a song is trending on Facebook. Inspect the actual page, not only a search snippet. If a login blocks access, do not invent rankings or bypass it.
+2. Gather up to 5 useful candidates, including chill instrumental music and relevant subtle SFX. Do not force SFX to be trending when no evidence exists. Record observations in `audio-trends.json` in the job folder. If nothing verifiable is accessible, write `[]` and explain the limitation in delivery.
+3. Each observation has `title`, `platform` (`facebook`, `instagram`, `tiktok`), `region` (e.g. `US`), `observed_on` (YYYY-MM-DD), `url` (HTTPS), `signal` (`rising` or `popular`), `evidence` (specific visible signal, ranking/time window if shown), and `tags` (verified mood/style). Observation date is the actual inspection date, not a way to refresh stale articles. Keep page date/window in evidence. Only set `catalog_id` when it is the exact same recording in the licensed local catalog, not a cover/remix or similar style.
+4. Separate discovery from permission. A trending listing is not a license. TikTok commercial availability does not establish Facebook rights. Check the exact recording's permission for commercial Facebook Reels and downloaded-video use before acquisition. Never rip audio from source clips or social posts. No paid subscriptions/downloads without user authorization. If a platform track is only available through its in-app picker, keep it as a reference, not a renderable file.
+5. For new recordings with verified supported licenses (CC0, CC-BY 3.0/4.0, Mixkit SFX Free or Pixabay Content), create `audio-downloads.json` as described below and run `.venv-reels/Scripts/python.exe reels/audio_discovery.py --job <job> --region US --download`. This downloads, validates and registers assets before ranking. Without new downloads omit `--download`. The shortlist checks local provenance, ignores observations older than 7 days or from the wrong region, penalizes music used in the last 5 jobs, and distinguishes exact observed tracks, style matches and fallbacks. Scores are internal heuristics, not streaming statistics. Read `audio-download-report.json`; failed downloads are not registered, and licensed local fallback remains available.
+6. Review at least 3 music alternatives when available. Prefer chill, instrumental, voice-friendly arrangements and a usable section covering the entire Reel. Choose by the scene's pace and payoff, not score alone. Preview/listen if available; do not claim listening based on tags. Record chosen ID, excerpt, rejected alternatives and why in the edit-plan music `selection_reason` field. SFX must match a visible event; prioritize appropriateness over trendiness.
+7. Keep the user's strict audio policy: voice + chill music + SFX only; no original source or outro audio. Preserve credits. A rights-checked fallback is not “hottrend”; explicitly identify it as a fallback/style match.
+
+Official entry points (check live availability and terms each time):
+
+- Meta Reels / Sound Collection: https://www.facebook.com/business/ads/facebook-instagram-reels-ads
+- Meta music-library limitations: https://www.facebook.com/help/instagram/402084904469945
+- TikTok music trends: https://ads.tiktok.com/business/creativecenter/inspiration/popular/music/pc/en
+- TikTok Commercial Music Library scope: https://ads.tiktok.com/help/article/commercial-music-library?lang=en
+
+Do not promise guaranteed distribution, trend freshness without evidence, or immunity from copyright claims.
+
+## Automatic acquisition
+
+The agent writes `audio-downloads.json`; do not ask the user to author it. Each request must be verified against the exact recording's original source, not a generic license page alone. The downloader validates declared provenance and saves source/license snapshots; it cannot legally verify the truth of declarations on its own.
+
+The file is a list of at most five objects with: `id` (lowercase slug), `kind` (`music` or `sfx`), `title`, `author`, `download_url` (direct audio HTTPS URL), `source_url` (original recording page), `license_url`, `license` (`CC0-1.0`, `CC-BY-3.0`, `CC-BY-4.0`, `Mixkit-SFX-Free`, or `Pixabay-Content`), `license_evidence` (why this exact recording is covered), `verified_on` (actual YYYY-MM-DD within seven days), `tags` (music must include a chill/mellow/ambient tag), and `attribution` (required for CC-BY).
+
+Only public HTTPS endpoints; no cookies, credential URLs, paywalls or social-video extraction. Maximum 50 MiB per audio and 30 minutes duration; download timeout and redirect checks apply. Archives and video files are rejected. Files are decoded before registration, hashed and stored under `reels/assets/downloaded/<id>/` with provenance and snapshots. Existing IDs are never replaced; a matching existing file is reused after hash verification. Catalog updates preserve other assets. Failed or interrupted registrations may leave a directory for inspection; never delete it blindly.
+
+Standalone command: `.venv-reels/Scripts/python.exe reels/audio_download.py --job <job>`. It returns failure when any requested download fails. Setup refreshes retain managed downloaded assets. Provider-specific licenses require `usage: facebook-commercial-video` and official provenance/download domains, checked by `audio_rights.py`. Read `audio-sources.md` for the seven-provider workflow and restrictions. Other licenses require an explicit adapter; never relabel a platform-specific license as CC0.
